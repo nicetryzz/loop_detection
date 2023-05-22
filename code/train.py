@@ -58,7 +58,7 @@ def main(args):
 
     folder_path="/home/hqlab/workspace/closure/EE5346_2023_project/"
 
-    train_loader, valid_loader, test_loader = get_data_loader(folder_path)
+    train_loader, valid_loader = get_data_loader(folder_path)
 
     # Create an instance of the model
     model_back = MLP().cuda()
@@ -100,7 +100,7 @@ def main(args):
 
         with torch.no_grad(): # 不计算梯度
             
-            for i, data in enumerate(train_loader):
+            for i, data in enumerate(valid_loader):
                 img1, img2, labels = data # get the first batch of inputs from the data loader
                 img1 = img1.cuda()
                 img2 = img2.cuda()

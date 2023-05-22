@@ -59,13 +59,11 @@ def get_data_loader(folder_path):
     dataset = ConcatDataset(datasets)
 
     train_size = int(len(dataset)*0.8)
-    valid_size = int(len(dataset)*0.1)
-    test_size = int(len(dataset)*0.1)
-    train_subset, valid_subset, test_subset = random_split(dataset, [train_size, valid_size, test_size])
+    valid_size = int(len(dataset)*0.2)
+    train_subset, valid_subset = random_split(dataset, [train_size, valid_size])
 
     # Create data loaders for each subset with the desired batch size and shuffle option
     train_loader = DataLoader(train_subset, batch_size=4, shuffle=True)
     valid_loader = DataLoader(valid_subset, batch_size=4, shuffle=False)
-    test_loader = DataLoader(test_subset, batch_size=4, shuffle=False)
     
-    return train_loader, valid_loader, test_loader
+    return train_loader, valid_loader
