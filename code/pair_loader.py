@@ -31,7 +31,7 @@ class ImagePairDataset(Dataset):
         # Return the image pair as a tuple
         return (img1, img2, label)
 
-def get_data_loader(folder_path):
+def get_data_loader(folder_path,batch_size):
     
     # Create instances of the datasets for different txt files
     transform = None
@@ -63,7 +63,7 @@ def get_data_loader(folder_path):
     train_subset, valid_subset = random_split(dataset, [train_size, valid_size])
 
     # Create data loaders for each subset with the desired batch size and shuffle option
-    train_loader = DataLoader(train_subset, batch_size=4, shuffle=True)
-    valid_loader = DataLoader(valid_subset, batch_size=4, shuffle=False)
+    train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+    valid_loader = DataLoader(valid_subset, batch_size=batch_size, shuffle=False)
     
     return train_loader, valid_loader

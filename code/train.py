@@ -54,17 +54,18 @@ def main(args):
     # Define hyperparameters
     batch_size = 4
     num_epochs = 200
-    learning_rate = 0.01
+    learning_rate = 1e-4
 
     folder_path="/home/hqlab/workspace/closure/EE5346_2023_project/"
 
-    train_loader, valid_loader = get_data_loader(folder_path)
+    train_loader, valid_loader = get_data_loader(folder_path,batch_size)
 
     # Create an instance of the model
     model_back = MLP().cuda()
 
     # Define the loss function and the optimizer
-    criterion = ContrastiveLoss(margin=2)
+    # criterion = ContrastiveLoss(margin=2)
+    criterion = nn.CosineEmbeddingLoss(margin=0.5)
     optimizer = optim.SGD(model_back.parameters(), lr=learning_rate) # optimizer is stochastic gradient descent
 
     # Train the model using metric learning with pairs of images
@@ -75,6 +76,7 @@ def main(args):
             img1 = img1.cuda()
             img2 = img2.cuda()
             labels = labels.cuda()
+            labels = labels*2 -1
             optimizer.zero_grad() # zero the parameter gradients
             inputs1 = model(img1)
             inputs2 = model(img2)
@@ -97,6 +99,11 @@ def main(args):
         total_loss = 0.0 # 记录总损失
         total_acc = 0.0 # 记录总准确率
         total_num = 0 # 记录总样本数
+        tp = 0
+        tn = 0
+        fp = 0
+        fn = 0
+        max_thre = 0
 
         with torch.no_grad(): # 不计算梯度
             
@@ -112,12 +119,36 @@ def main(args):
                 # Create pairs of embeddings and labels based on whether they have the same label or not
                 embeddings1 = model_back(inputs1) # forward pass to get embeddings for the first batch
                 embeddings2 = model_back(inputs2) # forward pass to get embeddings for the second batch
-
+                sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
+                # Compare the similarity with the threshold and the target
+                mask = torch.eq(labels,0)
+                masked_sim = torch.masked_select(sim, mask)
+                if torch.numel(masked_sim) != 0:
+                    max_value = torch.max(masked_sim)
+                    max_thre = max(max_value,max_thre)
+            
+            for i, data in enumerate(valid_loader):
+                img1, img2, labels = data # get the first batch of inputs from the data loader
+                img1 = img1.cuda()
+                img2 = img2.cuda()
+                labels = labels.cuda()
+                labels = labels*2 -1
+                optimizer.zero_grad() # zero the parameter gradients
+                inputs1 = model(img1)
+                inputs2 = model(img2)
+            
+                # Create pairs of embeddings and labels based on whether they have the same label or not
+                embeddings1 = model_back(inputs1) # forward pass to get embeddings for the first batch
+                embeddings2 = model_back(inputs2) # forward pass to get embeddings for the second batch
+                sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
+                pred = torch.where(sim > max_thre, torch.tensor(1), torch.tensor(-1))
                 loss = criterion(embeddings1, embeddings2, labels) # 计算损失
-
-                distance = torch.norm(embeddings1 - embeddings2, p=2, dim=1) # 计算距离
-                pred = (distance < 0.5).float() # 根据距离判断是否相似，阈值为0.5，可以根据需要调整
                 acc = (pred == labels).float().mean() # 计算准确率
+                
+                tp += torch.sum((pred == 1) & (labels == 1)).item()
+                tn += torch.sum((pred == -1) & (labels == -1)).item()
+                fp += torch.sum((pred == 1) & (labels == -1)).item()
+                fn += torch.sum((pred == -1) & (labels == 1)).item()
 
                 total_loss += loss.item() * embeddings1.size(0) # 累加损失
                 total_acc += acc.item() * embeddings1.size(0) # 累加准确率
@@ -125,8 +156,10 @@ def main(args):
 
         mean_loss = total_loss / total_num # 计算平均损失
         mean_acc = total_acc / total_num # 计算平均准确率
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
 
-        print(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, Test Accuracy: {mean_acc:.4f}") # 打印结果
+        print(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, Test Accuracy: {mean_acc:.4f}, threshold:{max_thre:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}") # 打印结果
 
     print('Finished Training')
     return 0
