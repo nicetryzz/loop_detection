@@ -1,31 +1,24 @@
 import argparse
-from functools import partial
-import json
 import logging
 import os
 import sys
 from typing import List, Optional
-from torchvision import transforms
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision
-import torchvision.transforms as transforms
-from PIL import Image
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, random_split
+from torch.utils.tensorboard import SummaryWriter
+from torchmetrics import AveragePrecision
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall
 
 from pair_loader import get_data_loader
 from model import MLP
-from loss import ContrastiveLoss
+from util import EarlyStopper
 
-import dinov2.distributed as distributed
-from dinov2.data import SamplerType, make_data_loader, make_dataset
-from dinov2.data.transforms import make_classification_eval_transform
-from dinov2.eval.metrics import AccuracyAveraging, build_topk_accuracy_metric
 from dinov2.eval.setup import get_args_parser as get_setup_args_parser
 from dinov2.eval.setup import setup_and_build_model
-from dinov2.eval.utils import ModelWithNormalize, evaluate, extract_features
+
+logger = logging.getLogger("dinov2")
 
 def get_args_parser(
     description: Optional[str] = None,
@@ -45,127 +38,210 @@ def get_args_parser(
         help="Whether to gather the train features on cpu, slower"
         "but useful to avoid OOM for large datasets (e.g. ImageNet22k).",
     )
+    parser.add_argument(
+        '--test', 
+        action='store_true',
+        help="Test the pretrained MLP",)
+    parser.add_argument(
+        "--train-path",
+        type=str,
+        help="Train data path.",
+    )
+    parser.add_argument(
+        "--valid-path",
+        type=str,
+        help="Validation data path.",
+    )
+    parser.add_argument(
+        "--test-path",
+        type=str,
+        help="Test data path.",
+    )
+    parser.add_argument(
+        "--MLP-weight-path",
+        type=str,
+        help="Pretrained MLP weight path.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Batch size.",
+    )
+    parser.add_argument(
+        "--split",
+        action='store_true',
+        help="Need split train-val dataset.",
+    )
     parser.set_defaults(
+        train_path="/home/hqlab/workspace/closure/dataset/robotcar_dataset/Downloads/",
+        valid_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
+        test_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
+        MLP_weight_path="../result/testbest.pth",
+        batch_size=6,
     )
     return parser
 
-def main(args):
-    model, autocast_dtype = setup_and_build_model(args)
-    # Define hyperparameters
-    batch_size = 4
+def test_MLP(args):
+    model, _= setup_and_build_model(args)
+    writer = SummaryWriter(args.output_dir+'/runs/testing')
+    
+    batch_size = args.batch_size
+    test_path=args.test_path
+    weight_path = args.MLP_weight_path
+    valid_loader = get_data_loader(test_path,batch_size,split=False,need_translate = False)
+    criterion = nn.CosineEmbeddingLoss()
+
+    model_back = MLP().cuda()
+    model_weight = torch.load(weight_path)
+    model_back.load_state_dict(model_weight['model_back_state_dict'])
+    
+    if 'model_state_dict' in model_weight:
+        model.load_state_dict(model_weight['model_state_dict'])
+        
+    eval_MLP(model,model_back,valid_loader,criterion,0,writer)
+    writer.close()
+    return 0
+
+
+def train_MLP(args):
+    model, _ = setup_and_build_model(args)
+    os.makedirs(args.output_dir+"/models", exist_ok=True)
+    writer = SummaryWriter(args.output_dir+'/runs/training')
+    batch_size = args.batch_size
     num_epochs = 200
-    learning_rate = 1e-4
+    learning_rate = 1e-3
+    min_loss = 10
 
-    folder_path="/home/hqlab/workspace/closure/EE5346_2023_project/"
+    if args.split:
+        train_path =args.train_path
+        train_loader,valid_loader = get_data_loader(train_path,batch_size,split=True,need_translate = False)
+    else:
+        train_path=args.train_path
+        valid_path=args.valid_path
+        train_loader = get_data_loader(train_path,batch_size,split=True,need_translate = True)
+        valid_loader = get_data_loader(valid_path,batch_size,split=True,need_translate = True)
 
-    train_loader, valid_loader = get_data_loader(folder_path,batch_size)
-
-    # Create an instance of the model
     model_back = MLP().cuda()
 
-    # Define the loss function and the optimizer
-    # criterion = ContrastiveLoss(margin=2)
-    criterion = nn.CosineEmbeddingLoss(margin=0.5)
-    optimizer = optim.SGD(model_back.parameters(), lr=learning_rate) # optimizer is stochastic gradient descent
+    criterion = nn.CosineEmbeddingLoss()
+    optimizer_params = [{"params": model_back.parameters(), "lr": learning_rate},
+                        {"params": model.parameters(), "lr": 1e-2*learning_rate},]
+    optimizer = optim.SGD(optimizer_params)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-6)
+    early_stopper = EarlyStopper(patience=5, min_delta=0.01)
 
-    # Train the model using metric learning with pairs of images
     for epoch in range(num_epochs):
-        running_loss = 0.0
+        lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('learning rate', lr, epoch)
+
+        
+        train_total_loss = 0
+        total_num = 0
         for i, data in enumerate(train_loader):
-            img1, img2, labels = data # get the first batch of inputs from the data loader
+            img1, img2, labels = data 
             img1 = img1.cuda()
             img2 = img2.cuda()
             labels = labels.cuda()
             labels = labels*2 -1
-            optimizer.zero_grad() # zero the parameter gradients
+            optimizer.zero_grad()
+            
             inputs1 = model(img1)
             inputs2 = model(img2)
-            
-            # Create pairs of embeddings and labels based on whether they have the same label or not
-            embeddings1 = model_back(inputs1) # forward pass to get embeddings for the first batch
-            embeddings2 = model_back(inputs2) # forward pass to get embeddings for the second batch
-            
-            loss = criterion(embeddings1, embeddings2, labels) # 计算损失
-
-            loss.backward() # 反向传播
-            optimizer.step() # 更新参数
-
-            running_loss += loss.item()
-            # if i % 200 == 199: # print statistics every 200 mini-batches
-            #     print('[%d, %5d] loss: %.3f' % (epoch + 1, i + 1, running_loss / 200))
-            #     running_loss = 0.0
-                
+            embeddings1 = model_back(inputs1)
+            embeddings2 = model_back(inputs2)
+                        
+            loss = criterion(embeddings1, embeddings2, labels)
+            train_total_loss += loss.item() * embeddings1.size(0)
+            total_num += embeddings1.size(0)
+            loss.backward()
+            optimizer.step()
         
-        total_loss = 0.0 # 记录总损失
-        total_acc = 0.0 # 记录总准确率
-        total_num = 0 # 记录总样本数
-        tp = 0
-        tn = 0
-        fp = 0
-        fn = 0
-        max_thre = 0
+        train_mean_loss = train_total_loss / total_num
+        writer.add_scalar('training loss', train_mean_loss, epoch)
 
-        with torch.no_grad(): # 不计算梯度
-            
-            for i, data in enumerate(valid_loader):
-                img1, img2, labels = data # get the first batch of inputs from the data loader
-                img1 = img1.cuda()
-                img2 = img2.cuda()
-                labels = labels.cuda()
-                optimizer.zero_grad() # zero the parameter gradients
-                inputs1 = model(img1)
-                inputs2 = model(img2)
-            
-                # Create pairs of embeddings and labels based on whether they have the same label or not
-                embeddings1 = model_back(inputs1) # forward pass to get embeddings for the first batch
-                embeddings2 = model_back(inputs2) # forward pass to get embeddings for the second batch
-                sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
-                # Compare the similarity with the threshold and the target
-                mask = torch.eq(labels,0)
-                masked_sim = torch.masked_select(sim, mask)
-                if torch.numel(masked_sim) != 0:
-                    max_value = torch.max(masked_sim)
-                    max_thre = max(max_value,max_thre)
-            
-            for i, data in enumerate(valid_loader):
-                img1, img2, labels = data # get the first batch of inputs from the data loader
-                img1 = img1.cuda()
-                img2 = img2.cuda()
-                labels = labels.cuda()
-                labels = labels*2 -1
-                optimizer.zero_grad() # zero the parameter gradients
-                inputs1 = model(img1)
-                inputs2 = model(img2)
-            
-                # Create pairs of embeddings and labels based on whether they have the same label or not
-                embeddings1 = model_back(inputs1) # forward pass to get embeddings for the first batch
-                embeddings2 = model_back(inputs2) # forward pass to get embeddings for the second batch
-                sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
-                pred = torch.where(sim > max_thre, torch.tensor(1), torch.tensor(-1))
-                loss = criterion(embeddings1, embeddings2, labels) # 计算损失
-                acc = (pred == labels).float().mean() # 计算准确率
-                
-                tp += torch.sum((pred == 1) & (labels == 1)).item()
-                tn += torch.sum((pred == -1) & (labels == -1)).item()
-                fp += torch.sum((pred == 1) & (labels == -1)).item()
-                fn += torch.sum((pred == -1) & (labels == 1)).item()
+        val_mean_loss = eval_MLP(model,model_back,valid_loader,criterion,epoch,writer)
+        
+        if val_mean_loss < min_loss:
+            model_path = args.output_dir + "/best.pth"
+            torch.save({
+            'epoch': epoch,
+            'model_back_state_dict': model.state_dict(),
+            'model_back_state_dict': model_back.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': val_mean_loss,
+            }, model_path)
 
-                total_loss += loss.item() * embeddings1.size(0) # 累加损失
-                total_acc += acc.item() * embeddings1.size(0) # 累加准确率
-                total_num += embeddings1.size(0) # 累加样本数
-
-        mean_loss = total_loss / total_num # 计算平均损失
-        mean_acc = total_acc / total_num # 计算平均准确率
-        precision = tp / (tp + fp)
-        recall = tp / (tp + fn)
-
-        print(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, Test Accuracy: {mean_acc:.4f}, threshold:{max_thre:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}") # 打印结果
-
-    print('Finished Training')
+        scheduler.step(val_mean_loss)
+        if early_stopper.early_stop(val_mean_loss):
+            break
+    logger.info('Finished Training')
+    writer.close()
     return 0
 
+
+def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
+    total_loss = 0.0
+    total_num = 0
+    ap = AveragePrecision(task="binary").cuda()
+    accuracy = BinaryAccuracy(threshold=0.5).cuda()
+    precision = BinaryPrecision(threshold=0.5).cuda()
+    recall = BinaryRecall(threshold=0.5).cuda()
+
+    with torch.no_grad():
+        prediction_list = []
+        label_list = []
+        for i, data in enumerate(valid_loader):
+            img1, img2, labels = data
+            img1 = img1.cuda()
+            img2 = img2.cuda()
+            labels = labels.cuda()
+            label_list.append(labels)
+            labels = labels*2 -1
+            
+            inputs1 = model(img1)
+            inputs2 = model(img2)
+            embeddings1 = model_back(inputs1)
+            embeddings2 = model_back(inputs2)
+            
+            sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
+            preds = torch.sigmoid(sim)
+            prediction_list.append(preds)
+            loss = criterion(embeddings1, embeddings2, labels)
+
+            total_loss += loss.item() * embeddings1.size(0)
+            total_num += embeddings1.size(0)
+
+    predictions = torch.cat(prediction_list)
+    labels = torch.cat(label_list)
+    
+    ap.update(predictions, labels)
+    
+    ap_score = ap.compute()
+    acc_score = accuracy(predictions, labels)
+    prec_score = precision(predictions, labels)
+    rec_score = recall(predictions, labels)
+    
+    writer.add_pr_curve('PR-curve', labels, predictions, global_step=epoch)
+
+    mean_loss = total_loss / total_num
+
+    writer.add_scalar('validation loss', mean_loss, epoch)
+    writer.add_scalar('validation average precision', ap_score, epoch)
+    writer.add_scalar('validation precision', prec_score, epoch)
+    writer.add_scalar('validation recall', rec_score, epoch)
+    writer.add_scalar('validation accuracy', acc_score, epoch)
+    logger.info(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, average precision: {ap_score.item():.4f}")
+    return mean_loss
+
+
+def main(args):
+    if args.test:
+        test_MLP(args)
+    else:
+        train_MLP(args) 
+
 if __name__ == "__main__":
-    description = "DINOv2 model patch matching"
+    description = "DINOv2 image similarity"
     args_parser = get_args_parser(description=description)
     args = args_parser.parse_args()
     sys.exit(main(args))

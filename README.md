@@ -1,28 +1,7 @@
 # DINOv2: Learning Robust Visual Features without Supervision
 
-**[Meta AI Research, FAIR](https://ai.facebook.com/research/)**
 
-Maxime Oquab,
-Timothée Darcet,
-Théo Moutakanni,
-Huy V. Vo,
-Marc Szafraniec,
-Vasil Khalidov,
-Patrick Labatut,
-Armand Joulin,
-Piotr Bojanowski
-
-[[`Paper`](https://arxiv.org/abs/2304.07193)] [[`Blog`](https://ai.facebook.com/blog/dino-v2-computer-vision-self-supervised-learning/)] [[`Demo`](https://dinov2.metademolab.com)] [[`BibTeX`](#citing-dinov2)]
-
-PyTorch implementation and pretrained models for DINOv2. For details, see the paper: **[DINOv2: Learning Robust Visual Features without Supervision](https://arxiv.org/abs/2304.07193)**.
-
-DINOv2 models produce high-performance visual features that can be directly employed with classifiers as simple as linear layers on a variety of computer vision tasks; these visual features are robust and perform well across domains without any requirement for fine-tuning. The models were pretrained on a dataset of 142 M images without using any labels or annotations.
-
-https://user-images.githubusercontent.com/60359573/230078733-5faffa19-e6ce-4c55-9200-62dd76f8236a.mp4
-
-<div align="center">
-  Visualization of the three first principal components of the patch features of all frames, mapped to RGB values.
-</div>
+DINOv2 models produce high-performance visual features that can be directly employed with classifiers as simple as linear layers on a variety of computer vision tasks; these visual features are robust and perform well across domains without any requirement for fine-tuning. 
 
 ## Pretrained models
 

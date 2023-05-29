@@ -11,6 +11,6 @@ dist/
 *.swp
 
 dinov2/weights/
-dinov2/result/
+result/
 
 .vscode/
