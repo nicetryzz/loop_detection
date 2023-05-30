@@ -5,7 +5,7 @@ import os
 import cv2
 
 class ImagePairDataset(Dataset):
-    def __init__(self, txt_file, folder_path, transform=None, need_translate = True):
+    def __init__(self, txt_file, folder_path, transform=None, need_translate = True, without_label=False):
         # Open the txt file and read the lines
         with open(txt_file, 'r') as f:
             self.lines = f.readlines()
@@ -13,6 +13,7 @@ class ImagePairDataset(Dataset):
         self.transform = transform
         self.folder_path = folder_path
         self.need_translate = need_translate
+        self.without_label = without_label
     
     def __len__(self):
         # Return the number of pairs in the dataset
@@ -22,8 +23,11 @@ class ImagePairDataset(Dataset):
         # Get the line at the given index
         line = self.lines[idx]
         line = line.replace(" ", "")
-        img1_path, img2_path, label = line.split(",")
-        label = int(label.replace("\n",""))
+        if self.without_label:
+            img1_path, img2_path = line.split(",")
+        else:
+            img1_path, img2_path, label = line.split(",")
+            label = int(label.replace("\n",""))
         # Load the images using PIL
         if self.need_translate:
             img1 = cv2.imread(os.path.join(self.folder_path, img1_path), cv2.IMREAD_UNCHANGED)
@@ -38,9 +42,12 @@ class ImagePairDataset(Dataset):
             img1 = self.transform(img1)
             img2 = self.transform(img2)
         # Return the image pair as a tuple
-        return (img1, img2, label)
+        if self.without_label:
+            return (img1, img2)
+        else:
+            return (img1, img2, label)
 
-def get_data_loader(folder_path,batch_size,split=True,need_translate = True):
+def get_data_loader(folder_path,batch_size,split=True,need_translate = False):
     
     # Create instances of the datasets for different txt files
     transform = None
@@ -80,3 +87,23 @@ def get_data_loader(folder_path,batch_size,split=True,need_translate = True):
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         return data_loader
+
+def get_without_label_data_loader(folder_path,file_path,batch_size,need_translate = False):
+    
+    # Create instances of the datasets for different txt files
+    transform = None
+        
+    transforms_list = [
+        transforms.ToTensor(),
+        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.CenterCrop(224),
+        transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ]
+
+    transform = transforms.Compose(transforms_list)
+    
+    dataset = ImagePairDataset(file_path, folder_path=folder_path, transform=transform, need_translate=need_translate, without_label=True)
+    
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=Fasle)
+    
+    return data_loader

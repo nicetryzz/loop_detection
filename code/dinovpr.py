@@ -78,11 +78,19 @@ def get_args_parser(
         action='store_true',
         help="Use pretrain MLP.",
     )
+    parser.add_argument(
+        '--test-without-label', 
+        action='store_true',
+        help="Test the pretrained MLP and output label",)
+    parser.add_argument(
+        "--output-label-path",
+        type=str,
+        help="Output label path.",)
     parser.set_defaults(
         train_path="/home/hqlab/workspace/closure/dataset/robotcar_dataset/Downloads/",
-        valid_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
-        test_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
-        MLP_weight_path="../result/learn_back_small/best.pth",
+        valid_path="/home3/hqlab/chenqilong/EE5346_2023_project/",
+        test_path="/home3/hqlab/chenqilong/EE5346_2023_project/",
+        MLP_weight_path="../result/learn_back_small_continue/best.pth",
         batch_size=6,
     )
     return parser
@@ -99,13 +107,14 @@ def test_MLP(args):
 
     model_back = MLP().to(device)
     model_weight = torch.load(weight_path)
+
+    model= nn.DataParallel(model)
+    model_back= nn.DataParallel(model_back)
+
     model_back.load_state_dict(model_weight['model_back_state_dict'])
     
     if 'model_state_dict' in model_weight:
         model.load_state_dict(model_weight['model_state_dict'])
-
-    model= nn.DataParallel(model)
-    model_back= nn.DataParallel(model_back)
         
     eval_MLP(model,model_back,valid_loader,criterion,0,writer)
     writer.close()
@@ -249,14 +258,16 @@ def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
     logger.info(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, average precision: {ap_score.item():.4f}")
     return mean_loss
 
+
 def main(args):
-    if args.test:
+    if args.test | args.test_without_label:
         test_MLP(args)
     else:
         train_MLP(args) 
 
+
 if __name__ == "__main__":
-    description = "DINOv2 image similarity"
+    description = "DINOv2 based vpr"
     args_parser = get_args_parser(description=description)
     args = args_parser.parse_args()
     sys.exit(main(args))

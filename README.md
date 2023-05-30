@@ -47,7 +47,7 @@ The train file need contain both two image path and label, which seperated by co
 Run DINOVPR training on Tesla P100 nodes (8 GPUs):
 
 ```shell
-python code/train.py --config-file ./dinov2/configs/eval/vitl14_pretrain.yaml --pretrained-weights ./dinov2/weights/dinov2_vitl14_pretrain.pth --output-dir ./result/test_tensorboard --split --train-path <PATH/TO/DATASET> --batch-size 32
+python code/dinovpr.py --config-file ./dinov2/configs/eval/vitl14_pretrain.yaml --pretrained-weights ./dinov2/weights/dinov2_vitl14_pretrain.pth --output-dir ./result/test_tensorboard --split --train-path <PATH/TO/DATASET> --batch-size 32
 ```
 
 If you use pretrainde MLP, you can edit `--use-pretrain-MLP` and `--MLP-weight-path`.
