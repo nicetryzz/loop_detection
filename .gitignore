@@ -12,5 +12,6 @@ dist/
 
 dinov2/weights/
 result/
+commend.md
 
 .vscode/

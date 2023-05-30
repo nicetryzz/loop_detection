@@ -19,6 +19,7 @@ from dinov2.eval.setup import get_args_parser as get_setup_args_parser
 from dinov2.eval.setup import setup_and_build_model
 
 logger = logging.getLogger("dinov2")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_args_parser(
     description: Optional[str] = None,
@@ -72,11 +73,16 @@ def get_args_parser(
         action='store_true',
         help="Need split train-val dataset.",
     )
+    parser.add_argument(
+        "--use-pretrain-MLP",
+        action='store_true',
+        help="Use pretrain MLP.",
+    )
     parser.set_defaults(
         train_path="/home/hqlab/workspace/closure/dataset/robotcar_dataset/Downloads/",
         valid_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
         test_path="/home/hqlab/workspace/closure/EE5346_2023_project/",
-        MLP_weight_path="../result/testbest.pth",
+        MLP_weight_path="../result/learn_back_small/best.pth",
         batch_size=6,
     )
     return parser
@@ -91,12 +97,15 @@ def test_MLP(args):
     valid_loader = get_data_loader(test_path,batch_size,split=False,need_translate = False)
     criterion = nn.CosineEmbeddingLoss()
 
-    model_back = MLP().cuda()
+    model_back = MLP().to(device)
     model_weight = torch.load(weight_path)
     model_back.load_state_dict(model_weight['model_back_state_dict'])
     
     if 'model_state_dict' in model_weight:
         model.load_state_dict(model_weight['model_state_dict'])
+
+    model= nn.DataParallel(model)
+    model_back= nn.DataParallel(model_back)
         
     eval_MLP(model,model_back,valid_loader,criterion,0,writer)
     writer.close()
@@ -105,10 +114,9 @@ def test_MLP(args):
 
 def train_MLP(args):
     model, _ = setup_and_build_model(args)
-    os.makedirs(args.output_dir+"/models", exist_ok=True)
     writer = SummaryWriter(args.output_dir+'/runs/training')
     batch_size = args.batch_size
-    num_epochs = 200
+    num_epochs = 1000
     learning_rate = 1e-3
     min_loss = 10
 
@@ -118,14 +126,23 @@ def train_MLP(args):
     else:
         train_path=args.train_path
         valid_path=args.valid_path
-        train_loader = get_data_loader(train_path,batch_size,split=True,need_translate = True)
-        valid_loader = get_data_loader(valid_path,batch_size,split=True,need_translate = True)
+        train_loader = get_data_loader(train_path,batch_size,split=False,need_translate = True)
+        valid_loader = get_data_loader(valid_path,batch_size,split=False,need_translate = False)
 
-    model_back = MLP().cuda()
+    model_back = MLP().to(device)
+
+    if args.use_pretrain_MLP:
+        weight_path = args.MLP_weight_path
+        model_weight = torch.load(weight_path)
+        model.load_state_dict(model_weight['model_state_dict'])
+        model_back.load_state_dict(model_weight['model_back_state_dict'])
+
+    model= nn.DataParallel(model)
+    model_back= nn.DataParallel(model_back)
 
     criterion = nn.CosineEmbeddingLoss()
-    optimizer_params = [{"params": model_back.parameters(), "lr": learning_rate},
-                        {"params": model.parameters(), "lr": 1e-2*learning_rate},]
+    optimizer_params = [{"params": model_back.parameters(), "lr": learning_rate},]
+                        # {"params": model.parameters(), "lr": 1e-2*learning_rate},]
     optimizer = optim.SGD(optimizer_params)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, min_lr=1e-6)
     early_stopper = EarlyStopper(patience=5, min_delta=0.01)
@@ -134,14 +151,13 @@ def train_MLP(args):
         lr = optimizer.param_groups[0]['lr']
         writer.add_scalar('learning rate', lr, epoch)
 
-        
         train_total_loss = 0
         total_num = 0
         for i, data in enumerate(train_loader):
             img1, img2, labels = data 
-            img1 = img1.cuda()
-            img2 = img2.cuda()
-            labels = labels.cuda()
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            labels = labels.to(device)
             labels = labels*2 -1
             optimizer.zero_grad()
             
@@ -165,7 +181,7 @@ def train_MLP(args):
             model_path = args.output_dir + "/best.pth"
             torch.save({
             'epoch': epoch,
-            'model_back_state_dict': model.state_dict(),
+            'model_state_dict': model.state_dict(),
             'model_back_state_dict': model_back.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': val_mean_loss,
@@ -182,19 +198,19 @@ def train_MLP(args):
 def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
     total_loss = 0.0
     total_num = 0
-    ap = AveragePrecision(task="binary").cuda()
-    accuracy = BinaryAccuracy(threshold=0.5).cuda()
-    precision = BinaryPrecision(threshold=0.5).cuda()
-    recall = BinaryRecall(threshold=0.5).cuda()
+    ap = AveragePrecision(task="binary").to(device)
+    accuracy = BinaryAccuracy(threshold=0.5).to(device)
+    precision = BinaryPrecision(threshold=0.5).to(device)
+    recall = BinaryRecall(threshold=0.5).to(device)
 
     with torch.no_grad():
         prediction_list = []
         label_list = []
         for i, data in enumerate(valid_loader):
             img1, img2, labels = data
-            img1 = img1.cuda()
-            img2 = img2.cuda()
-            labels = labels.cuda()
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            labels = labels.to(device)
             label_list.append(labels)
             labels = labels*2 -1
             
@@ -204,7 +220,7 @@ def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
             embeddings2 = model_back(inputs2)
             
             sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
-            preds = torch.sigmoid(sim)
+            preds = torch.where(sim < 0, torch.zeros_like(sim), sim)
             prediction_list.append(preds)
             loss = criterion(embeddings1, embeddings2, labels)
 
@@ -232,7 +248,6 @@ def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
     writer.add_scalar('validation accuracy', acc_score, epoch)
     logger.info(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, average precision: {ap_score.item():.4f}")
     return mean_loss
-
 
 def main(args):
     if args.test:

@@ -16,7 +16,9 @@ dependencies:
   - iopath
   - xformers::xformers=0.0.18
   - pip
+  - tensorboard
   - pip:
-    - git+https://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@github.com/facebookincubator/submitit
+    - git+https://github.com/facebookincubator/submitit@main#egg=submitit
     - --extra-index-url https://pypi.nvidia.com
     - cuml-cu11
+    - opencv-python

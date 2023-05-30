@@ -1,4 +1,5 @@
 from torch import nn
+import torch.nn.functional as F
 
 class MLP(nn.Module):
     def __init__(self):
@@ -9,8 +10,10 @@ class MLP(nn.Module):
         self.relu = nn.ReLU()
 
     def forward(self, x):
-        x = x.view(-1, 1024)
+        x = F.normalize(x, p=2.0, dim=1)
         x = self.relu(self.fc1(x))
+        x = F.normalize(x, p=2.0, dim=1)
         x = self.relu(self.fc2(x))
+        x = F.normalize(x, p=2.0, dim=1)
         x = self.fc3(x)
         return x
