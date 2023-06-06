@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+import csv
 from typing import List, Optional
 
 import torch
@@ -9,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics import AveragePrecision
-from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall
+from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, PrecisionRecallCurve
 
 from pair_loader import get_data_loader
 from model import MLP
@@ -116,7 +117,7 @@ def test_MLP(args):
     if 'model_state_dict' in model_weight:
         model.load_state_dict(model_weight['model_state_dict'])
         
-    eval_MLP(model,model_back,valid_loader,criterion,0,writer)
+    eval_MLP(model,model_back,valid_loader,criterion,0,writer,True)
     writer.close()
     return 0
 
@@ -184,7 +185,7 @@ def train_MLP(args):
         train_mean_loss = train_total_loss / total_num
         writer.add_scalar('training loss', train_mean_loss, epoch)
 
-        val_mean_loss = eval_MLP(model,model_back,valid_loader,criterion,epoch,writer)
+        val_mean_loss = eval_MLP(model,model_back,valid_loader,criterion,epoch,writer,False)
         
         if val_mean_loss < min_loss:
             model_path = args.output_dir + "/best.pth"
@@ -204,7 +205,7 @@ def train_MLP(args):
     return 0
 
 
-def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
+def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer,save_pr_curve):
     total_loss = 0.0
     total_num = 0
     ap = AveragePrecision(task="binary").to(device)
@@ -255,6 +256,16 @@ def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer):
     writer.add_scalar('validation precision', prec_score, epoch)
     writer.add_scalar('validation recall', rec_score, epoch)
     writer.add_scalar('validation accuracy', acc_score, epoch)
+
+    if save_pr_curve:
+        pr_curve = PrecisionRecallCurve(task="binary").to(device)
+        P, R, T = pr_curve(predictions, labels)
+        with open(args.output_dir + '/pr_curve.csv', 'w') as f:
+            writer = csv.writer(f)
+            writer.writerow(['precision', 'recall'])
+            for p, r in zip(P, R):
+                writer.writerow([p.item(), r.item()])
+
     logger.info(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, average precision: {ap_score.item():.4f}")
     return mean_loss
 
