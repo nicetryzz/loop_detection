@@ -4,6 +4,7 @@ import os
 import sys
 import csv
 from typing import List, Optional
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -12,7 +13,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchmetrics import AveragePrecision
 from torchmetrics.classification import BinaryAccuracy, BinaryPrecision, BinaryRecall, PrecisionRecallCurve
 
-from pair_loader import get_data_loader
+from pair_loader import get_data_loader, get_without_label_data_loader
 from model import MLP
 from util import EarlyStopper
 
@@ -60,6 +61,11 @@ def get_args_parser(
         help="Test data path.",
     )
     parser.add_argument(
+        "--test-file",
+        type=str,
+        help="Test spcific file path.",
+    )
+    parser.add_argument(
         "--MLP-weight-path",
         type=str,
         help="Pretrained MLP weight path.",
@@ -90,7 +96,8 @@ def get_args_parser(
     parser.set_defaults(
         train_path="/home/hqlab/workspace/closure/dataset/robotcar_dataset/Downloads/",
         valid_path="/home3/hqlab/chenqilong/EE5346_2023_project/",
-        test_path="/home3/hqlab/chenqilong/EE5346_2023_project/",
+        test_path="/home3/hqlab/chenqilong/ee5346_dataset/",
+        test_file="/home3/hqlab/chenqilong/EE5346_2023_project/eval/robotcar_qAutumn_dbSunCloud_val_final.txt",
         MLP_weight_path="../result/learn_back_small_continue/best.pth",
         batch_size=6,
     )
@@ -103,8 +110,6 @@ def test_MLP(args):
     batch_size = args.batch_size
     test_path=args.test_path
     weight_path = args.MLP_weight_path
-    valid_loader = get_data_loader(test_path,batch_size,split=False,need_translate = False)
-    criterion = nn.CosineEmbeddingLoss()
 
     model_back = MLP().to(device)
     model_weight = torch.load(weight_path)
@@ -113,13 +118,23 @@ def test_MLP(args):
     model_back= nn.DataParallel(model_back)
 
     model_back.load_state_dict(model_weight['model_back_state_dict'])
-    
-    if 'model_state_dict' in model_weight:
-        model.load_state_dict(model_weight['model_state_dict'])
+
+    if args.test_without_label:
+        test_file = args.test_file
+        valid_loader = get_without_label_data_loader(test_path,test_file,batch_size,need_translate = False)
+        write_path = test_file[:-9]+"result.txt"
+        eval_MLP_withoutlabel(model,model_back,valid_loader, write_path)
+    else:
+        writer = SummaryWriter(args.output_dir+'/runs/testing')
+        valid_loader = get_data_loader(test_path,batch_size,split=False,need_translate = False)
+        criterion = nn.CosineEmbeddingLoss()
         
-    eval_MLP(model,model_back,valid_loader,criterion,0,writer,True)
-    writer.close()
-    return 0
+        if 'model_state_dict' in model_weight:
+            model.load_state_dict(model_weight['model_state_dict'])
+            
+        eval_MLP(model,model_back,valid_loader,criterion,0,writer,True)
+        writer.close()
+        return 0
 
 
 def train_MLP(args):
@@ -268,6 +283,33 @@ def eval_MLP(model,model_back,valid_loader,criterion,epoch,writer,save_pr_curve)
 
     logger.info(f"epoch:{epoch},Test Loss: {mean_loss:.4f}, average precision: {ap_score.item():.4f}")
     return mean_loss
+
+
+def eval_MLP_withoutlabel(model,model_back,valid_loader, write_path):
+    prediction_list = []
+    img1_list = []
+    img2_list = []
+    with torch.no_grad():
+        for i, data in enumerate(valid_loader):
+            img1, img2, img1_path, img2_path = data
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            img1_list.append(img1_path)
+            img2_list.append(img2_path)
+            
+            inputs1 = model(img1)
+            inputs2 = model(img2)
+            embeddings1 = model_back(inputs1)
+            embeddings2 = model_back(inputs2)
+            
+            sim = nn.functional.cosine_similarity(embeddings1, embeddings2)
+            preds = torch.where(sim < 0.5, torch.zeros_like(sim), torch.ones_like(sim))
+            prediction_list.append(preds)
+
+    with open(write_path, 'w') as f:
+        for i in range(len(prediction_list)):
+            for j in range(len(prediction_list[i])):
+                f.write(str(int(prediction_list[i][j].item()))+"\n")
 
 
 def main(args):

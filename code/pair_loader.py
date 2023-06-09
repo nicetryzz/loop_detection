@@ -25,6 +25,10 @@ class ImagePairDataset(Dataset):
         line = line.replace(" ", "")
         if self.without_label:
             img1_path, img2_path = line.split(",")
+            img2_path = img2_path.replace("\n","")
+            img1_path = img1_path.replace("_mini_val_query","_val/stereo/centre")
+            img2_path = img2_path.replace("_mini_val_ref","_val/stereo/centre")
+
         else:
             img1_path, img2_path, label = line.split(",")
             label = int(label.replace("\n",""))
@@ -43,7 +47,7 @@ class ImagePairDataset(Dataset):
             img2 = self.transform(img2)
         # Return the image pair as a tuple
         if self.without_label:
-            return (img1, img2)
+            return (img1, img2, img1_path, img2_path)
         else:
             return (img1, img2, label)
 
@@ -104,6 +108,6 @@ def get_without_label_data_loader(folder_path,file_path,batch_size,need_translat
     
     dataset = ImagePairDataset(file_path, folder_path=folder_path, transform=transform, need_translate=need_translate, without_label=True)
     
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=Fasle)
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     
     return data_loader
